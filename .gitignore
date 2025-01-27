@@ -7,7 +7,6 @@ yarn-debug.log*
 yarn-error.log*
 
 # dotenv environment variables file
-.env
 
 # MacOS system files
 .DS_Store
@@ -21,7 +20,6 @@ logs/
 logs/**/*.log
 
 # VSCode settings (if you're using VSCode)
-.vscode/
 
 # IDE configuration files
 .idea/
@@ -32,3 +30,4 @@ build/
 
 # Optional, to ignore any temporary files
 *.tmp
+config.bat
