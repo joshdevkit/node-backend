@@ -1,13 +1,21 @@
 import User from "../../models/User.js";
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import generateToken from '../../utils/JwtGenerator.js'
+import path from 'path'
+import { fileURLToPath } from "url";
+import sendEmail from '../../utils/mailer.js'
+import crypto from 'crypto';
+
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PasswordResetTemplatePath = path.join(__dirname, "../../mails/template.html");
 
 export const register = async (req, res) => {
-    const { userName, email, password, confirmPassword } = req.body;
-
+    const { name, email, password, confirmPassword } = req.body;
     try {
-        if (!userName || !email || !password || !confirmPassword) {
+        if (!name || !email || !password || !confirmPassword) {
             return res.status(400).json({ message: 'All fields are required' });
         }
 
@@ -24,7 +32,7 @@ export const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const user = await User.create({
-            userName,
+            name,
             email,
             password: hashedPassword,
         });
@@ -35,7 +43,7 @@ export const register = async (req, res) => {
             message: 'User registered successfully',
             user: {
                 id: user._id,
-                userName: user.userName,
+                name: user.name,
                 email: user.email,
             },
             token, 
@@ -66,7 +74,11 @@ export const login = async (req, res) => {
         res.status(200).json({
             message: 'Login successful',
             token,
-            user: { id: user._id, userName: user.userName, email: user.email },
+            user: {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+            },
         });
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -90,15 +102,66 @@ export const profile = async(req, res) => {
 
 export const currentUser = async (req, res) => {
     try {
-        const token = req.headers.authorization?.split(' ')[1];
-        if (!token) {
-            return res.status(401).json({ message: 'No token provided' });
-        }
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findById(decoded.userId).select('-password');
-        res.status(200).json({ user: user });
-        
+        const userId = req.user.userId;
 
+        const user = await User.findById(userId);
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.status(200).json({ user });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+};
+
+export const reset = async (req, res) => {
+    const { email } = req.body;
+  
+    const user = await User.findOne({ email }).select('-password');
+  
+    if (!user) {
+        return res.status(404).json({ message: "Email address doesn't exist" });
+    }
+  
+    if (user.resetAttempts >= 3) {
+        return res.status(400).json({
+            message: 'You have exceeded the maximum number of password reset requests.',
+        });
+    }
+  
+    try {
+        const resetToken = crypto.randomBytes(32).toString('hex'); // Generates a 32-byte token with hex characters
+  
+        const salt = bcrypt.genSaltSync(12);
+        
+        const hashedToken = bcrypt.hashSync(resetToken, salt);
+
+        const resetTokenExpiration = Date.now() + 60 * 60 * 1000;
+
+        user.resetToken = hashedToken;
+        user.resetTokenExpiration = resetTokenExpiration;
+        user.resetAttempts += 1;
+        await user.save();
+
+        const resetLink = `${process.env.FRONTEND_URL}/change-password/${user._id}?token=${hashedToken}`;
+
+        await sendEmail({
+            email: user.email,
+            subject: "Password Reset Link",
+            templatePath: PasswordResetTemplatePath,
+            templateData: {
+                fullname: user.name,
+                link: resetLink,
+                supportEmail: process.env.APP_MAILER_USER,
+            },
+        });
+  
+        res.status(200).json({
+            message: "Reset link has been sent to your email.",
+        });
+  
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
@@ -121,3 +184,87 @@ export const logOut = async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 };
+
+export const validateResetToken = async (req, res) => {
+    const { userID, token } = req.body;
+  
+    try {
+      // Find the user by their ID
+      const user = await User.findById(userID);
+  
+      // Check if the user exists
+      if (!user) {
+        return res.status(404).json({ isValid: false, message: "User not found." });
+      }
+  
+      // Check if the token exists and is not expired
+      if (!user.resetToken || user.resetTokenExpiration < Date.now()) {
+        return res.status(400).json({
+          isValid: false,
+          isExpired: true,
+          message: "The token has expired or is invalid.",
+        });
+      }
+  
+      // Directly compare the provided token with the stored resetToken
+      if (token !== user.resetToken) {
+        return res.status(400).json({ isValid: false, message: "Invalid token." });
+      }
+  
+      // If everything is valid
+      res.status(200).json({
+        isValid: true,
+        isExpired: false,
+        message: "Token is valid.",
+      });
+    } catch (error) {
+      console.error("Error validating reset token:", error.message);
+      res.status(500).json({
+        isValid: false,
+        message: "Server error.",
+        error: error.message,
+      });
+    }
+};
+
+export const updatePassword = async (req, res) => {
+    const { id, password, confirmPassword } = req.body;
+  
+    try {
+      const user = await User.findById(id);
+  
+      if (!user) {
+        return res.status(404).json({ isValid: false, message: "User not found." });
+      }
+  
+      if (password !== confirmPassword) {
+        return res.status(400).json({ isValid: false, message: "Passwords do not match." });
+      }
+
+      if (password.length < 8) {
+        return res.status(400).json({
+          isValid: false,
+          message: "Password must be at least 8 characters long.",
+        });
+      }
+  
+      const salt = await bcrypt.genSalt(12);
+      const hashedPassword = await bcrypt.hash(password, salt);
+  
+      user.password = hashedPassword;
+      user.resetToken = null; 
+      user.resetAttempts = 0;   
+      await user.save();
+  
+      res.status(200).json({
+        isUpdated: true,
+        message: "Password updated successfully.",
+      });
+    } catch (error) {
+      res.status(500).json({
+        message: "Server error.",
+        error: error.message,
+      });
+    }
+  };
+  
