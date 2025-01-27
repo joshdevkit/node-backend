@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 // Define the User schema
 const userSchema = new mongoose.Schema(
     {
-        userName: {
+        name: {
             type: String,
             required: true,
             trim: true, 
@@ -24,6 +24,16 @@ const userSchema = new mongoose.Schema(
             required: true,
             minlength: 8, 
         },
+        resetAttempts: {
+            type: Number,
+            default: 0,
+        },
+        resetToken: {
+            type: String,
+          },
+          resetTokenExpiration: {
+            type: Date,
+          },
     },
     {
         timestamps: true, 
